@@ -2,11 +2,10 @@ package main
 
 import (
 	"fmt"
-
-	"github.com/hhxsv5/go-redis-memory-analysis"
+	gorma "go-redis-memory-analysis"
 )
 
-func main() {
+func main2222() {
 	//Open redis rdb file: ./6379_dump.rdb
 	analysis, err := gorma.NewAnalysisRDB("./6379_dump.rdb")
 	defer analysis.Close()

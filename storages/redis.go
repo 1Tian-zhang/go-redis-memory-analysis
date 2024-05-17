@@ -2,15 +2,16 @@ package storages
 
 import (
 	"bytes"
+	"github.com/garyburd/redigo/redis"
 	"strconv"
 	"strings"
-
-	"github.com/garyburd/redigo/redis"
+	"time"
 )
 
 type RedisClient struct {
 	Id   string
 	conn redis.Conn
+	pool redis.Pool
 }
 
 func NewRedisClient(host string, port uint16, password string) (*RedisClient, error) {
@@ -31,7 +32,18 @@ func NewRedisClient(host string, port uint16, password string) (*RedisClient, er
 		}
 	}
 
-	return &RedisClient{addr.String(), conn}, err
+	pool := redis.Pool{
+		MaxIdle:     3,                 // 连接池中的最大空闲连接数
+		IdleTimeout: 240 * time.Second, // 如果连接超过这个时间未使用，则关闭它
+		Dial: func() (redis.Conn, error) {
+			return redis.Dial("tcp", addr.String(),
+				redis.DialDatabase(0),        // 选择数据库
+				redis.DialPassword(password), // 密码
+			)
+		},
+	}
+
+	return &RedisClient{addr.String(), conn, pool}, err
 }
 
 func (client RedisClient) Select(db uint64) error {
@@ -61,7 +73,8 @@ func (client RedisClient) GetDatabases() (map[uint64]string, error) {
 }
 
 func (client RedisClient) Scan(cursor *uint64, match string, limit uint64) ([]string, error) {
-	reply, err := client.conn.Do("SCAN", *cursor, "MATCH", match, "COUNT", limit)
+	conn := client.pool.Get()
+	reply, err := conn.Do("SCAN", *cursor, "MATCH", match, "COUNT", limit)
 	result, err := redis.Values(reply, err)
 
 	var keys []string

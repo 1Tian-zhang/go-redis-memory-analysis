@@ -2,17 +2,19 @@ package gorma
 
 import (
 	"fmt"
+	"go-redis-memory-analysis/storages"
+	"log"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/hhxsv5/go-redis-memory-analysis/storages"
+	"sync"
+	"time"
 )
 
 type AnalysisConnection struct {
-	redis   *storages.RedisClient
-	Reports DBReports
+	redis        *storages.RedisClient
+	Reports      DBReports
 	scanLimitNum uint64
 }
 
@@ -35,11 +37,17 @@ func (analysis *AnalysisConnection) SetScanNum(num uint64) {
 	}
 }
 
+type resultMap struct {
+	db  uint64
+	val []Report
+}
+
 func (analysis AnalysisConnection) Start(delimiters []string) {
 	fmt.Println("Starting analysis")
+	log.SetFlags(log.Ldate | log.Ltime)
 	match := "*[" + strings.Join(delimiters, "") + "]*"
 	databases, _ := analysis.redis.GetDatabases()
-	
+
 	if analysis.scanLimitNum == 0 {
 		analysis.scanLimitNum = 3000
 	}
@@ -51,74 +59,89 @@ func (analysis AnalysisConnection) Start(delimiters []string) {
 		ttl    int64
 		length uint64
 		sr     SortBySizeReports
-		mr     KeyReports
+		//mr     KeyReports
 	)
-
+	var wg sync.WaitGroup
+	info := make(chan resultMap, len(databases))
 	for db, _ := range databases {
-		fmt.Println("Analyzing db", db)
-		cursor = 0
-		mr = KeyReports{}
+		wg.Add(1)
+		go func(db uint64) {
+			startTime := time.Now()
+			defer func() {
+				wg.Done()
+				log.Printf("End Analyzing db: %d, cost time: %vs\n", db, time.Now().Sub(startTime).Seconds())
+			}()
+			log.Printf("Start Analyzing db: %d\n", db)
+			cursor = 0
+			mr := KeyReports{}
 
-		_ = analysis.redis.Select(db)
+			_ = analysis.redis.Select(db)
 
-		for {
-			keys, _ := analysis.redis.Scan(&cursor, match, analysis.scanLimitNum)
-			fd, fp, tmp, nk := "", 0, 0, ""
-			for _, key := range keys {
-				fd, fp, tmp, nk, ttl = "", 0, 0, "", 0
-				for _, delimiter := range delimiters {
-					tmp = strings.Index(key, delimiter)
-					if tmp != -1 && (tmp < fp || fp == 0) {
-						fd, fp = delimiter, tmp
+			for {
+				keys, _ := analysis.redis.Scan(&cursor, match, analysis.scanLimitNum)
+				//fmt.Printf("%v, %v: %\n", db, keys, ffff)
+				fd, fp, tmp, nk := "", 0, 0, ""
+				for _, key := range keys {
+					fd, fp, tmp, nk, ttl = "", 0, 0, "", 0
+					for _, delimiter := range delimiters {
+						tmp = strings.Index(key, delimiter)
+						if tmp != -1 && (tmp < fp || fp == 0) {
+							fd, fp = delimiter, tmp
+						}
 					}
+
+					if fp == 0 {
+						continue
+					}
+
+					nk = key[0:fp] + fd + "*"
+
+					if _, ok := mr[nk]; ok {
+						r = mr[nk]
+					} else {
+						r = Report{nk, 0, 0, 0, 0}
+					}
+
+					ttl, _ = analysis.redis.Ttl(key)
+
+					switch ttl {
+					case -2:
+						continue
+					case -1:
+						r.NeverExpire++
+						r.Count++
+					default:
+						f = float64(r.AvgTtl*(r.Count-r.NeverExpire)+uint64(ttl)) / float64(r.Count+1-r.NeverExpire)
+						ttl, _ := strconv.ParseUint(fmt.Sprintf("%0.0f", f), 10, 64)
+						r.AvgTtl = ttl
+						r.Count++
+					}
+
+					length, _ = analysis.redis.SerializedLength(key)
+					r.Size += length
+
+					mr[nk] = r
 				}
 
-				if fp == 0 {
-					continue
+				if cursor == 0 {
+					break
 				}
-
-				nk = key[0:fp] + fd + "*"
-
-				if _, ok := mr[nk]; ok {
-					r = mr[nk]
-				} else {
-					r = Report{nk, 0, 0, 0, 0}
-				}
-
-				ttl, _ = analysis.redis.Ttl(key)
-
-				switch ttl {
-				case -2:
-					continue
-				case -1:
-					r.NeverExpire++
-					r.Count++
-				default:
-					f = float64(r.AvgTtl*(r.Count-r.NeverExpire)+uint64(ttl)) / float64(r.Count+1-r.NeverExpire)
-					ttl, _ := strconv.ParseUint(fmt.Sprintf("%0.0f", f), 10, 64)
-					r.AvgTtl = ttl
-					r.Count++
-				}
-
-				length, _ = analysis.redis.SerializedLength(key)
-				r.Size += length
-
-				mr[nk] = r
 			}
 
-			if cursor == 0 {
-				break
+			//Sort by size
+			sr = SortBySizeReports{}
+			for _, report := range mr {
+				sr = append(sr, report)
 			}
-		}
-
-		//Sort by size
-		sr = SortBySizeReports{}
-		for _, report := range mr {
-			sr = append(sr, report)
-		}
-		sort.Sort(sr)
-
-		analysis.Reports[db] = sr
+			sort.Sort(sr)
+			info <- resultMap{db, sr}
+			//analysis.Reports[db] = sr
+		}(db)
+	}
+	wg.Wait()
+	close(info)
+	for s := range info {
+		analysis.Reports[s.db] = s.val
 	}
 }
 

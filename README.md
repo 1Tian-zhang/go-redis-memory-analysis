@@ -1,6 +1,10 @@
 Redis memory analysis
 ======
 
+> fork from gitee.com:hhxsv5/go-redis-memory-analysis
+>
+> I modified it to support multi-goroutines and now it can be run directly
+
 🔎  Analyzing memory of redis is to find the keys(prefix) which used a lot of memory, export the analysis result into csv file.
 
 [![GoDoc](https://godoc.org/github.com/hhxsv5/go-redis-memory-analysis?status.svg)](https://godoc.org/github.com/hhxsv5/go-redis-memory-analysis)

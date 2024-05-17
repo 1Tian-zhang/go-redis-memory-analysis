@@ -15,6 +15,8 @@ type Report struct {
 }
 
 type DBReports map[uint64][]Report
+
+// type DBReports interface{}
 type KeyReports map[string]Report
 type SortBySizeReports []Report
 type SortByCountReports []Report
